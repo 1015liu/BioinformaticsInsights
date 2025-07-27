@@ -1,0 +1,328 @@
+---
+title: "Water Quality Analysis Report Of A Polluted River"
+author: "Leyang Liu"
+date: " 20250612"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: cosmo
+    code_folding: hide
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 10,
+  fig.height = 6
+)
+```
+
+# Water Quality Analysis Report Of A Polluted River
+
+# 1. Introduction
+
+In this study, the researchers selected a heavily polluted river as the research object and established 14 main monitoring sites along the river, namely T1–T6 and M1–M8 (see Figure 1). From July 2019 to July 2020, water samples were collected and analyzed for 19 physical and chemical parameters. The sampling sites M1, M2, M3, M4, M5, M6, M7, and M8 are located on the main river channel, while T1, T2, T3, T4, T5, and T6 are the tributaries that flow into the main channel. Sites M1–M3 and T1–T3 are close to the urban area, and urban sewage entering the river is the primary source of pollution. Sites M4, M5, T4, and T5 are located near the industrial zone, where the paper industry is well-developed, and the pollution is mainly caused by the inflow of paper mill wastewater into the river. Sites M6–M8 are located in the downstream section of the river.
+
+The study used statistical techniques such as cluster analysis (CA), discriminant analysis (DA), principal component analysis (PCA), and factor analysis (FA) to analyze the obtained datasets. The aim was to identify the seasonal and spatial variations in water quality, determine the key discriminant parameters, and estimate the contribution rates of pollution sources.
+
+![](images/clipboard-2790431577.png)
+
+```{r}
+# Load required packages
+library(tidyverse)
+library(lubridate)
+library(cluster)
+library(MASS)
+library(FactoMineR)
+library(factoextra)
+library(corrplot)
+library(ggdendro)
+library(reshape2)
+library(igraph)
+library(readxl)
+library(here)
+library(dplyr)
+library(stringr)
+library(psych)
+library(GGally)
+```
+
+# 2. Data Preparation
+
+The dataset was preprocessed to handle missing values and normalize data. Key parameters including pH, dissolved oxygen (DO), chemical oxygen demand (COD), ammonia nitrogen (NH3-N), total phosphorus (TP), and heavy metals were selected for analysis.
+
+```{r}
+# Import and preprocess data
+setwd(here())
+#getwd()
+raw_data <- read_excel(here("data", "journal.pone.0245525.s001.xlsx"))
+a <- Sys.setlocale("LC_TIME", "English") 
+
+water_data <- raw_data %>%
+  mutate(
+    Month = str_replace(Month, "(\\d+)\\.(\\d+)", "\\2/\\1"), # change "YYYY.MM" to "MM/YYYY"
+    Month = as_date(Month, format = "%m/%Y"), 
+    Month = format(Month, "%b") 
+  )
+# Check data structure
+#glimpse(water_data)
+
+# Correlation analysis
+ggcorr(water_data, label = TRUE, label_size = 3) + 
+  ggtitle("Water Quality Indicator Correlation Heatmap")
+
+```
+The water quality heatmap shows correlations between indicators. Total Phosphorus (TP) has correlation coefficients of 0.5 with CODMn and 0.4 with COD, mainly from urban and agricultural runoff. Arsenic (As) is significantly correlated with Copper (Cu) and Mercury (Hg) at 0.5 each, and Total Cyanides (CN) has a correlation coefficient of 0.6 with Volatile Phenols (VP), mainly from industrial sources.
+
+# 3. Pollution Source Analysis
+
+Factor analysis identified 7 principal components explaining 72.5% of variance. The scree plot (Figure 3.1) shows the percentage of variance explained by each component. 
+
+```{r}
+# Prepare data for FA
+fa_data <- water_data %>%
+  dplyr::select(PH:Se) %>%
+  scale() %>%
+  as.data.frame()
+
+# KMO and Bartlett's test
+KMO(fa_data)  # Kaiser-Meyer-Olkin test
+cortest.bartlett(fa_data)  # Bartlett's test of sphericity
+
+# Principal Component Analysis
+pca_result <- PCA(fa_data, ncp = 7, graph = FALSE)
+# Scree plot
+fviz_eig(pca_result, addlabels = TRUE, 
+         main = "Scree Plot of Principal Components")
+
+# Factor loadings visualization
+fviz_pca_var(pca_result, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+
+# variables contributing
+cat("\nTop variables contributing:\n")
+print(head(pca_result$var$contrib[order(-pca_result$var$contrib[,1]), ], 10))
+```
+The Kaiser-Meyer-Olkin (KMO) test indicates factor analysis suitability with an overall KMO value of 0.75, suggesting the data is appropriate for analysis. Bartlett's test shows a very low p-value (5.784967e-174), confirming the correlation matrix is not an identity matrix, further supporting factor analysis.
+
+The scree plot of principal components reveals the first component explains 29.2% of variance, followed by 10.5% and 9.2% for the second and third, respectively. The subsequent components explain less variance, indicating the first few components capture most of the data variability.
+
+The PCA biplot shows variable contributions to the first two dimensions, with VP, COD, and Cu having the highest contributions to Dim1, explaining 29.2% of variance. This visualization helps identify key variables driving data structure and dimensionality reduction for further analysis.
+
+# 4. Temporal Variation Analysis
+
+## 4.1 Seasonal Clustering
+
+Hierarchical clustering revealed three distinct seasonal clusters (Figure 4.1). The dendrogram shows that months group into low-flow (Nov-Jan), medium-flow (Mar-May), and high-flow (Jun-Oct) periods based on water quality parameters.
+
+```{r}
+# Monthly aggregation
+monthly_avg <- water_data %>%
+  group_by(Month) %>%
+  summarise(across(c(VP,COD,Cu,TP,CN,S, CODMn), mean, na.rm = TRUE)) %>%
+  column_to_rownames("Month")
+
+# Hierarchical clustering
+hc_time <- hclust(dist(scale(monthly_avg)), method = "ward.D2")
+
+hc_time$height <- (hc_time$height / max(hc_time$height)) * 100
+
+# Visualization
+fviz_dend(hc_time, k = 3, cex = 1, main = "Seasonal Cluster Dendrogram",
+          k_colors = c("#2E9FDF", "#E7B800", "#FC4E07"),
+          ylab = "(Dlink/Dmax)*100",  
+          xlab = "Month"  )+
+  theme(plot.title = element_text(size = 16, face = "bold"),  
+        axis.title.x = element_text(size = 14, face = "bold"), 
+        axis.title.y = element_text(size = 14, face = "bold"))  
+```
+
+## 4.2 Discriminant Analysis (Temporal)
+
+Linear discriminant analysis (LDA) using VP,COD,Cu,TP,CN,S, CODMn, achieved 73.2% classification accuracy (figure 4.2). These parameters effectively distinguish between different temporal clusters.
+
+```{r}
+# Time grouping based on clusters
+cluster_time_groups <- cutree(hc_time , k = 3)
+time_data <- data.frame(Month = names(cluster_time_groups), Group = cluster_time_groups)
+
+# Prepare DA data
+da_time_data <- water_data %>%
+  left_join(time_data, by = "Month") %>%
+  dplyr::select(Group, VP,COD,Cu,TP,CN,S, CODMn) %>%
+  drop_na() %>%
+  mutate(Group = as.factor(Group))
+
+# Linear discriminant analysis
+lda_time <- lda(Group ~ ., data = da_time_data)
+
+# Classification accuracy
+pred_time <- predict(lda_time, da_time_data)
+confusion_matrix <- table(Actual = da_time_data$Group, Predicted = pred_time$class)
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+
+# Display results
+cat("Temporal Classification Accuracy:", round(accuracy*100, 1), "%\n")
+print(confusion_matrix)
+ggplot(as.data.frame(as.table(confusion_matrix)), aes(x =Actual , y = Predicted, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "white") +
+  labs(title = "Confusion Matrix",
+       x = "Actual",
+       y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## 4.3 Seasonal Parameter Variation
+
+Boxplots show distinct seasonal patterns for key parameters (Figure 4.3). VP,COD,Cu,TP,CN,S, CODMn, exhibit significant variation across different flow periods.
+
+```{r}
+# Key parameters visualization
+da_time_data %>%
+  #dplyr::select(Group, CODMn, Cu, As, Se) %>%
+  pivot_longer(-Group, names_to = "Parameter", values_to = "Value") %>%
+  ggplot(aes(x = Group, y = Value, fill = Group)) +
+  geom_boxplot() +
+  facet_wrap(~Parameter, scales = "free_y") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Seasonal Variation of Key Discriminant Parameters",
+       y = "Concentration") +
+  theme_minimal()
+```
+
+# 5. Spatial Variation Analysis
+
+## 5.1 Site Clustering
+
+Hierarchical clustering identified three spatial clusters (Figure 5.1). Group A comprised M4 ,M1 and T1( Urban areas) were highly polluted areas. ; group B comprised T6 ,M3,M5 to M8 were in moderately polluted areas; group C comprised M2 and T2 to T5 were low polluted areas.
+
+```{r}
+# Site aggregation
+site_avg <- water_data %>%
+  group_by(NO.) %>%
+  summarise(across(c(VP,COD,Cu,TP,CN,S, CODMn), mean, na.rm = TRUE)) %>%
+  column_to_rownames("NO.")
+
+# Hierarchical clustering
+hc_space <- hclust(dist(scale(site_avg)), method = "ward.D2")
+
+threshold <- 0.7 * max(hc_space$height)  # (Dlink/Dmax)*100 <70
+clusters <- cutree(hc_space, h = threshold) 
+
+# Visualization
+fviz_dend(hc_space, k = 3, cex = 0.7, main = "Spatial Cluster Dendrogram",
+          k_colors = c("#1B9E77", "#D95F02", "#7570B3"))
+```
+
+## 5.2 Discriminant Analysis (Spatial)
+
+LDA using VP,COD,Cu,TP,CN,S, CODMn achieved  84.5 % classification accuracy (Figure 5.2). These parameters effectively distinguish between spatial clusters.
+
+```{r}
+# Spatial grouping based on clusters
+cluster_groups <- cutree(hc_space, k = 3)
+site_data <- data.frame(NO. = names(cluster_groups), Group = cluster_groups)
+
+# Prepare DA data
+da_space_data <- water_data %>%
+  left_join(site_data, by = "NO.") %>%
+  dplyr::select(Group, VP,COD,Cu,TP,CN,S, CODMn) %>%
+  drop_na() %>%
+  mutate(Group = as.factor(Group))
+
+# Linear discriminant analysis
+lda_space <- lda(Group ~ ., data = da_space_data)
+
+# Classification accuracy
+pred_space <- predict(lda_space, da_space_data)
+conf_matrix_space <- table(Actual = da_space_data$Group, Predicted = pred_space$class)
+accuracy_space <- sum(diag(conf_matrix_space)) / sum(conf_matrix_space)
+
+# Display results
+cat("Spatial Classification Accuracy:", round(accuracy_space*100, 1), "%\n")
+print(conf_matrix_space)
+ggplot(as.data.frame(as.table(conf_matrix_space)), aes(x =Actual , y = Predicted, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "white") +
+  labs(title = "Confusion Matrix",
+       x = "Actual",
+       y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## 5.3 Spatial Parameter Distribution
+
+Boxplots show spatial variations in key parameters (Figure 5.3). Urban sites show higher concentrations of domestic pollution indicators, while industrial sites have elevated heavy metal levels.
+
+```{r}
+# Visualize spatial discriminant parameters
+water_data %>%
+  left_join(site_data, by = "NO.") %>%
+  dplyr::select(Group, VP,COD,Cu,TP,CN,S, CODMn) %>%
+  pivot_longer(-Group, names_to = "Parameter", values_to = "Value") %>%
+  ggplot(aes(x = as.factor(Group), y = Value, fill = as.factor(Group))) +
+  geom_boxplot() +
+  facet_wrap(~Parameter, scales = "free_y", ncol = 4) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(title = "Spatial Distribution of Discriminant Parameters",
+       x = "Spatial Group", fill = "Group") +
+  theme_minimal()
+```
+
+# 6. Ethical Considerations
+
+## 6.1 Data Transparency
+
+**Raw Data Accessibility**: The raw data used in this study is publicly accessible with clear provenance. This ensures that other researchers can verify and reproduce the results.
+
+**Methodological Disclosure**: Complete methodological disclosure is provided, including detailed descriptions of the data collection and analysis methods. This transparency is crucial for maintaining the integrity of the research.
+
+##  6.2 Interpretation Limitations 
+
+**Correlation vs. Causation**: It is important to note that statistical correlations identified in this study do not imply causal relationships. Further research is needed to establish causality.
+
+**Exclusion of Biological Indicators**: The analysis excludes biological indicators, which limits the ecological assessment of the river's health. Future studies should include a broader range of indicators to provide a more comprehensive understanding. 
+
+##  6.3 Societal Implications 
+
+**Industrial Pollution Identification**: The identification of industrial pollution sources requires validation before any policy action is taken. This ensures that industries are not unfairly targeted.
+
+**Public Health Focus**: Public health concerns are significant, especially in areas identified as hotspots for heavy metals such as As (arsenic) and Cd (cadmium). Sites M1, T1, and M4 are identified as critical areas requiring immediate attention to protect public health.
+
+##  6.4 Analytical Integrity 
+
+**Cross-Validation**: Multiple method cross-validation is employed to reduce bias and ensure the robustness of the findings.
+
+**Funding Source Integrity**: The study ensures that there are no conflicts of interest from funding sources. This maintains the objectivity and integrity of the research.
+
+# 7. Conclusion
+
+## Key Findings
+
+Temporal Patterns: Distinct seasonal clusters (Low/Medium/High-flow periods) with VP,COD,Cu,TP,CN,S, CODMn,  key temporal discriminators (73.2% accuracy).
+
+Spatial Patterns: Three spatial zones (Urban, Industrial, Tributary) with VP,COD,Cu,TP,CN,S, CODMn as spatial discriminators (84.5% accuracy).
+
+
+## Management Recommendations
+
+Priority Zones: Focus on urban sites (M1,T1) and industrial sites M4 during low-flow periods.
+
+Parameter Monitoring: Optimize sampling to discriminant parameters.
+
+Source Control: Upgrade Wastewater Treatment Plants in urban areas, strengthen industrial discharge monitoring.
+
+## Future research directions
+
+By integrating GIS with land use data, digitizing the types of land use in the study area (such as urban areas, industrial zones, farmlands, and forests), and conducting spatial analysis using Geographic Information Systems (GIS), more intuitive and reliable spatial evidence for pollution source identification can be provided. If data on the locations, discharge volumes, and pollutant concentrations of major industrial enterprises and wastewater treatment plants within the study area can be obtained, it can be compared with water quality monitoring results to directly verify the accuracy of the pollution sources inferred by statistical models. Additionally, the potential risks of various heavy metals (such as Cu, Cd, As, Hg) could be assessed, making the study's findings more relevant to public welfare and environmental management decisions.
